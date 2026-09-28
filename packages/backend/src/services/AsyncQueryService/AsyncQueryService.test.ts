@@ -368,7 +368,7 @@ const inMemoryDuckdbHistory = ({
 const getMockedAsyncQueryService = (
     lightdashConfig: LightdashConfig,
     overrides: Partial<AsyncQueryService> = {},
-    documentService?: Pick<DocumentService, 'get'>,
+    documentService?: Pick<DocumentService, 'get' | 'getVersion'>,
 ) => {
     // The registry is built over the service under test, so a merge's DAG
     // nodes reach the same mocks a direct call would
@@ -377,6 +377,9 @@ const getMockedAsyncQueryService = (
         getDocumentService: () =>
             (documentService ?? {
                 get: vi
+                    .fn()
+                    .mockRejectedValue(new NotFoundError('Document not found')),
+                getVersion: vi
                     .fn()
                     .mockRejectedValue(new NotFoundError('Document not found')),
             }) as DocumentService,
@@ -8134,11 +8137,11 @@ describe('saved Document chart queries', () => {
     };
 
     test('a Document-only viewer executes its persisted custom-SQL chart but cannot run arbitrary metric queries', async () => {
-        const get = vi.fn().mockResolvedValue(document);
+        const getVersion = vi.fn().mockResolvedValue(document);
         const service = getMockedAsyncQueryService(
             lightdashConfigMock,
             {},
-            { get },
+            { get: getVersion, getVersion },
         );
         const account = viewer();
         const controls = {
@@ -8184,10 +8187,11 @@ describe('saved Document chart queries', () => {
             reference,
         });
         expect(result.queryUuid).toBe('document-query');
-        expect(get).toHaveBeenCalledWith(
+        expect(getVersion).toHaveBeenCalledWith(
             account,
             projectUuid,
             reference.documentUuid,
+            reference.versionUuid,
         );
         expect(resolveExplore).toHaveBeenCalledWith(
             account,
@@ -8221,7 +8225,7 @@ describe('saved Document chart queries', () => {
         'result reads reauthorize Document access (referenced=%s)',
         async (referenced) => {
             const account = viewer();
-            const get = vi.fn().mockResolvedValue(document);
+            const getVersion = vi.fn().mockResolvedValue(document);
             const source = {
                 queryUuid: 'document-query',
                 context: QueryExecutionContext.CHART,
@@ -8252,7 +8256,7 @@ describe('saved Document chart queries', () => {
                         ),
                     } as unknown as QueryHistoryModel,
                 },
-                { get },
+                { get: getVersion, getVersion },
             );
             await expect(
                 service.getAsyncQueryResults({
@@ -8261,7 +8265,8 @@ describe('saved Document chart queries', () => {
                     queryUuid: requested.queryUuid,
                 }),
             ).resolves.toMatchObject({ status: QueryHistoryStatus.ERROR });
-            expect(get).toHaveBeenCalledWith(
+            // Result reads re-check current Document access, not a version
+            expect(getVersion).toHaveBeenCalledWith(
                 account,
                 projectUuid,
                 reference.documentUuid,
@@ -8271,7 +8276,7 @@ describe('saved Document chart queries', () => {
                 new NotFoundError('Deleted'),
                 new ForbiddenError('Documents disabled'),
             ]) {
-                get.mockRejectedValue(error);
+                getVersion.mockRejectedValue(error);
                 // eslint-disable-next-line no-await-in-loop -- Verify permission changes between successive reads.
                 await expect(
                     service.getAsyncQueryResults({
@@ -8287,7 +8292,7 @@ describe('saved Document chart queries', () => {
     test('totals and unlimited replays refuse a revoked Document before compiling', async () => {
         const account = viewer();
         const error = new ForbiddenError('Document access revoked');
-        const get = vi.fn().mockRejectedValue(error);
+        const getVersion = vi.fn().mockRejectedValue(error);
         const source = {
             queryUuid: 'document-query',
             metricQuery: metricQueryMock,
@@ -8303,7 +8308,7 @@ describe('saved Document chart queries', () => {
                     get: vi.fn().mockResolvedValue(source),
                 } as unknown as QueryHistoryModel,
             },
-            { get },
+            { get: getVersion, getVersion },
         );
         await expect(
             service.executeAsyncUnboundedRerunFromQueryHistory({
@@ -8321,7 +8326,7 @@ describe('saved Document chart queries', () => {
                 kind: 'columnTotal',
             }),
         ).rejects.toBe(error);
-        expect(get).toHaveBeenCalledTimes(2);
+        expect(getVersion).toHaveBeenCalledTimes(2);
     });
 });
 
@@ -10252,7 +10257,7 @@ describe('executeAsyncMergeQuery on the compose engine', () => {
             service as unknown as { getDocumentService: () => DocumentService },
             'getDocumentService',
         ).mockReturnValue({
-            get: vi.fn().mockResolvedValue(document),
+            getVersion: vi.fn().mockResolvedValue(document),
         } as unknown as DocumentService);
         const result = await service.executeAsyncDocumentCellQuery({
             account,
